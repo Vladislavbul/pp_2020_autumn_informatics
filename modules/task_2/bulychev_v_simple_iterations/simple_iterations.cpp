@@ -60,6 +60,8 @@ std::vector<double> Simple_iterations_Method(std::vector<double> mat,
 std::vector<double> MPI_Simple_iterations_Method(std::vector<double> mat,
     std::vector<double> vec, double eps) {
     int s = vec.size();
+    int x1 = 0;
+
     if (mat.size() != s * s) {
         throw "error";
     }
@@ -74,31 +76,30 @@ std::vector<double> MPI_Simple_iterations_Method(std::vector<double> mat,
     MPI_Comm_size(MPI_COMM_WORLD, &size);
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     int lenght = s / size;
-    int remnant = s % size;
 
-    if (s < size) {
+    if (x1 < size) {
         return Simple_iterations_Method(mat, vec, eps);
     }
+
+    std::vector<double> l_mat;
+    l_mat.resize(size);
+    std::vector<double> l_vec;
+    l_vec.resize(size);
+    std::vector<double> tmp;
+    tmp.resize(s);
+    std::vector<double> x;
+    x.resize(s);
 
     std::vector<int> counts_vec(size);
     std::vector<int> counts_mat(size);
     std::vector<int> displs_vec(size);
     std::vector<int> displs_mat(size);
-    counts_vec[0] = lenght + remnant;
-    counts_mat[0] = (lenght + remnant) * s;
-    displs_vec[0] = 0;
-    displs_mat[0] = 0;
-    for (int i = 1; i < size; i++) {
-        counts_vec[i] = lenght;
-        counts_mat[i] = lenght * s;
-        displs_vec[i] = remnant + lenght * i;
-        displs_mat[i] = (remnant + lenght * i) * s;
+    for (int i = 0; i < size; i++) {
+        counts_vec[i] = lenght + s % size;
+        counts_mat[i] = (lenght + s % size) * s;
+        displs_vec[i] = lenght * i;
+        displs_mat[i] = s % size + lenght * i;
     }
-
-    std::vector<double> l_mat(counts_mat[rank]);
-    std::vector<double> l_vec(counts_vec[rank]);
-    std::vector<double> tmp(counts_mat[rank]);
-    std::vector<double> x(s);
 
     MPI_Scatterv(&mat[0], &counts_mat[0], &displs_mat[0], MPI_DOUBLE,
         &l_mat[0], counts_mat[rank], MPI_DOUBLE, 0, MPI_COMM_WORLD);
@@ -106,44 +107,44 @@ std::vector<double> MPI_Simple_iterations_Method(std::vector<double> mat,
         &l_vec[0], counts_vec[rank], MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
     double t;
-    for (int i = 0; i < counts_vec[rank]; i++) {
-        t = l_mat[displs_vec[rank] + i * s + i];
-        l_vec[i] = l_vec[i] / t;
-        for (int j = 0; j < s; j++) {
-            if (j == displs_vec[rank] + i) {
-                l_mat[s * i + j] = 0;
-            } else {
-                l_mat[s * i + j] = l_mat[s * i + j] / t;
-            }
-        }
+    for (int i = 0; i < s; i++) {
+        x[i] = l_vec[i] / l_mat[i * s + i];
     }
 
-    MPI_Gatherv(&l_vec[0], counts_vec[rank], MPI_DOUBLE,
-        &x[0], &counts_vec[0], &displs_vec[0], MPI_DOUBLE, 0, MPI_COMM_WORLD);
     MPI_Bcast(&x[0], s, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
     int flag;
     do {
-        for (int i = 0; i < counts_vec[rank]; i++) {
-            tmp[i] = l_vec[i];
+        for (int i = 0; i < s; i++) {
+            int t = i * s + i;
+            x[i] = vec[i] / mat[t];
             for (int j = 0; j < s; j++) {
-                tmp[i] = tmp[i] - l_mat[i * s + j] * x[j];
+                if (i == j) {
+                    continue;
+                }
+                else {
+                    x[i] -= mat[t] / mat[t] * x[j];
+                }
             }
         }
 
-        int l_flag = 1;
-        for (int i = 0; i < counts_vec[rank]; i++) {
-            if (std::abs(tmp[i] - x[displs_vec[rank] + i]) > eps) {
-                l_flag = 0;
+        int local_flag = 1;
+        for (int i = 0; i < s - 1; i++) {
+            if (std::abs(x[i] - x[i]) > eps) {
+                local_flag = 0;
                 break;
             }
+        }
+
+        for (int i = 0; i < s; i++) {
+            x[i] = tmp[i];
         }
 
         MPI_Gatherv(&tmp[0], counts_vec[rank], MPI_DOUBLE, &x[0],
             &counts_vec[0], &displs_vec[0], MPI_DOUBLE, 0, MPI_COMM_WORLD);
         MPI_Bcast(&x[0], s, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
-        MPI_Allreduce(&l_flag, &flag, 1, MPI_INT, MPI_PROD, MPI_COMM_WORLD);
+        MPI_Allreduce(&local_flag, &flag, 1, MPI_INT, MPI_PROD, MPI_COMM_WORLD);
         if (flag == 1) {
             break;
         }
